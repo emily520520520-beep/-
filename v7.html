@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>消防缺失統計系統 (iOS 穩定版)</title>
+    
+    <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    
+    <style>
+        :root { --main-blue: #2980b9; --pdf-blue: #D9EAF7; --border: #A5C2E3; }
+        body { font-family: -apple-system, "Microsoft JhengHei", sans-serif; background: #f0f2f5; margin: 0; padding: 10px; -webkit-font-smoothing: antialiased; }
+        
+        /* 讓輸入卡片在 iPhone 上更明顯 */
+        .input-card { 
+            background: white; padding: 15px; border-radius: 12px; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1); margin-bottom: 15px;
+            border-top: 5px solid var(--main-blue);
+        }
+        
+        .input-group { display: flex; flex-wrap: wrap; gap: 8px; }
+        .input-item { flex: 1; min-width: calc(50% - 10px); }
+        .full-width { flex: 100%; }
+        
+        label { display: block; font-size: 13px; font-weight: bold; margin-bottom: 4px; color: #555; }
+        
+        /* 防止 iPhone 自動放大，字體統一 16px */
+        input, select, textarea { 
+            width: 100%; padding: 12px 8px; border: 1px solid #ccc; 
+            border-radius: 8px; font-size: 16px; background: #fff; 
+            -webkit-appearance: none; /* 去除 iOS 預設內陰影 */
+        }
+
+        .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
+        button { 
+            padding: 15px; border: none; border-radius: 8px; color: white; 
+            font-weight: bold; font-size: 16px; cursor: pointer; -webkit-tap-highlight-color: transparent;
+        }
+        .btn-save { background: #27ae60; grid-column: span 2; }
+        .btn-export { background: #2980b9; }
+        .btn-pdf { background: #8e44ad; }
+
+        /* 表格區塊 */
+        .table-area { background: white; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+        .table-title { background: var(--pdf-blue); padding: 10px; text-align: center; font-weight: bold; border-bottom: 1px solid var(--border); }
+        
+        .table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        table { width: 100%; border-collapse: collapse; min-width: 800px; }
+        th { background: #f8f9fa; border: 1px solid var(--border); padding: 10px 5px; font-size: 13px; }
+        td { border: 1px solid var(--border); padding: 8px; text-align: center; font-size: 14px; }
+        
+        .photo-preview { max-width: 100%; border-radius: 8px; margin-top: 10px; display: none; }
+        .thumb { width: 50px; height: 50px; object-fit: cover; border-radius: 4px; }
+
+        /* 列印模式修正 */
+        @media print {
+            .input-card, .btn-group, .btn-action, p { display: none !important; }
+            body { background: white; padding: 0; }
+            .table-area { border: none; }
+            .table-responsive { overflow: visible; }
+            th:last-child, td:last-child { display: none !important; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="input-card" id="editor-ui">
+    <h3 id="formTitle">➕ 新增缺失紀錄</h3>
+    <div class="input-group">
+        <div class="input-item"><label>設備分類-1</label><select id="cat1"></select></div>
+        <div class="input-item"><label>設備分類-2</label><select id="cat2"></select></div>
+        <div class="input-item"><label>數量</label><input type="number" id="qty" value="1"></div>
+        <div class="input-item"><label>單位</label><select id="unit"></select></div>
+        <div class="input-item"><label>棟別樓層</label><input type="text" id="floor" placeholder="例: A棟1F"></div>
+        <div class="input-item"><label>位置</label><input type="text" id="pos" placeholder="例: 走廊"></div>
+        <div class="input-item full-width"><label>缺失說明</label><input type="text" id="issue" placeholder="請輸入缺失內容"></div>
+        <div class="input-item full-width">
+            <label>📷 拍照/上傳照片</label>
+            <input type="file" id="photoInput" accept="image/*" onchange="handlePhoto(event)">
+            <img id="previewImg" class="photo-preview">
+        </div>
+    </div>
+    <div class="btn-group">
+        <button class="btn-save" id="saveBtn" onclick="saveData()">💾 儲存紀錄</button>
+        <button class="btn-export" onclick="exportExcel()">📊 匯出 Excel</button>
+        <button class="btn-pdf" onclick="window.print()">📄 匯出 PDF</button>
+    </div>
+</div>
+
+<div class="table-area">
+    <div class="table-title">消防安全設備缺失統計表 [cite: 1]</div>
+    <div style="padding: 10px; font-size: 14px; border-bottom: 1px solid var(--border);">
+        檢測日期：<input type="date" id="testDate" style="width:150px; border:none; border-bottom:1px solid #000; border-radius:0;">
+    </div>
+    <div class="table-responsive">
+        <table>
+            <thead>
+                <tr>
+                    <th>編號</th>
+                    <th>設備分類-1</th>
+                    <th>設備分類-2</th>
+                    <th>數量</th>
+                    <th>單位</th>
+                    <th>位置</th>
+                    <th>照片</th>
+                    <th class="btn-action">操作</th>
+                </tr>
+            </thead>
+            <tbody id="dataTable"></tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+    // 補齊 PDF 中的所有下拉選項 
+    const menuData = {
+        cat1: ["滅火器設備", "「室內消防栓設備", "泡沫滅火設備", "自動灑水設備", "「火警自動警報設備", "「緊急廣播設備", "標示設備", "避難器具", "「緊急照明燈設備", "連結送水管", "「消防專用蓄水池", "排煙設備", "緊急電源插座"],
+        cat2: ["消防泵浦", "水帶", "泡沫原液槽", "泡沫泵浦", "自動警報逆止閥", "火警總機", "火警指示燈", "手動報警機", "探測器", "廣播主機", "揚聲器", "緊急電話", "避難方向指示燈", "出口燈", "樓層燈", "避難燈具", "出水口及送水口", "採水口", "自動排煙", "手動排煙", "排煙閘門", "緊急電源燈", "滅火器放置盒"],
+        unit: ["具", "台", "組", "只", "金", "支", "式", "個", "扇"]
+    };
+
+    const db = new Dexie("FireSafetyiOS");
+    db.version(1).stores({ records: '++id, cat1, cat2, qty, unit, floor, pos, issue, photo' });
+
+    let currentPhoto = "";
+    let editId = null;
+
+    function init() {
+        const fill = (id, arr) => {
+            const el = document.getElementById(id);
+            arr.forEach(txt => el.add(new Option(txt, txt)));
+        };
+        fill('cat1', menuData.cat1);
+        fill('cat2', menuData.cat2);
+        fill('unit', menuData.unit);
+        document.getElementById('testDate').valueAsDate = new Date();
+        render();
+    }
+
+    function handlePhoto(e) {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            currentPhoto = event.target.result;
+            const img = document.getElementById('previewImg');
+            img.src = currentPhoto;
+            img.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+    }
+
+    async function saveData() {
+        const data = {
+            cat1: document.getElementById('cat1').value,
+            cat2: document.getElementById('cat2').value,
+            qty: document.getElementById('qty').value,
+            unit: document.getElementById('unit').value,
+            floor: document.getElementById('floor').value,
+            pos: document.getElementById('pos').value,
+            issue: document.getElementById('issue').value,
+            photo: currentPhoto
+        };
+
+        if(editId) {
+            await db.records.update(editId, data);
+            editId = null;
+            document.getElementById('saveBtn').innerText = "💾 儲存紀錄";
+        } else {
+            await db.records.add(data);
+        }
+        
+        // 清除輸入
+        document.getElementById('issue').value = "";
+        document.getElementById('previewImg').style.display = 'none';
+        currentPhoto = "";
+        render();
+    }
+
+    async function render() {
+        const items = await db.records.toArray();
+        const html = items.map((r, i) => `
+            <tr>
+                <td>${i+1}</td>
+                <td>${r.cat1}</td>
+                <td>${r.cat2}</td>
+                <td>${r.qty}</td>
+                <td>${r.unit}</td>
+                <td>${r.pos}</td>
+                <td>${r.photo ? `<img src="${r.photo}" class="thumb">` : '無'}</td>
+                <td class="btn-action">
+                    <button style="background:#f39c12; padding:5px;" onclick="startEdit(${r.id})">改</button>
+                    <button style="background:#e74c3c; padding:5px;" onclick="del(${r.id})">刪</button>
+                </td>
+            </tr>
+        `).join('');
+        document.getElementById('dataTable').innerHTML = html;
+    }
+
+    async function startEdit(id) {
+        const r = await db.records.get(id);
+        editId = id;
+        document.getElementById('cat1').value = r.cat1;
+        document.getElementById('cat2').value = r.cat2;
+        document.getElementById('qty').value = r.qty;
+        document.getElementById('unit').value = r.unit;
+        document.getElementById('floor').value = r.floor;
+        document.getElementById('pos').value = r.pos;
+        document.getElementById('issue').value = r.issue;
+        document.getElementById('saveBtn').innerText = "🔄 更新紀錄";
+        window.scrollTo(0,0);
+    }
+
+    async function del(id) {
+        if(confirm('確定刪除？')) { await db.records.delete(id); render(); }
+    }
+
+    async function exportExcel() {
+        const items = await db.records.toArray();
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('缺失表');
+        sheet.columns = [ {header:'編號', width:5}, {header:'類別1', width:20}, {header:'類別2', width:20}, {header:'數量', width:10}, {header:'缺失說明', width:30} ];
+        items.forEach(r => sheet.addRow([r.id, r.cat1, r.cat2, r.qty + r.unit, r.issue]));
+        const buffer = await workbook.xlsx.writeBuffer();
+        saveAs(new Blob([buffer]), "消防缺失表.xlsx");
+    }
+
+    window.onload = init;
+</script>
+</body>
+</html>
